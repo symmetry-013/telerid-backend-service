@@ -18,6 +18,13 @@ const COLLECTION_NAME = process.env.COLLECTION_NAME || 'stations';
 let db;
 let client;
 
+// ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข
+function cleanNumber(val) {
+  if (val === null || val === undefined || val === '' || val === '-' || val === '--') return null;
+  const num = parseFloat(val);
+  return isNaN(num) ? null : num;
+}
+
 // 1. เชื่อมต่อฐานข้อมูล MongoDB Atlas
 async function initDatabase() {
   try {
@@ -27,7 +34,7 @@ async function initDatabase() {
     await db.collection(COLLECTION_NAME).createIndex({ stationCode: 1 }, { unique: true });
     console.log(`✅ [MongoDB Atlas] เชื่อมต่อสำเร็จ: ฐานข้อมูล "${DB_NAME}" คอลเลกชัน "${COLLECTION_NAME}"`);
 
-    // รันการซิงค์ข้อมูลครั้งแรกทันทีที่เซิร์ฟเวอร์เปิดขึ้นมา
+    // เริ่มดึงข้อมูลรอบแรกทันทีที่เซิร์ฟเวอร์เปิดใช้งาน
     syncTelemetryData();
   } catch (error) {
     console.error('❌ [MongoDB Error]:', error.message);
@@ -36,7 +43,7 @@ async function initDatabase() {
 
 initDatabase();
 
-// 2. ฟังก์ชันดึงข้อมูลจาก TeleRID WebSocket และบันทึกลง MongoDB Atlas
+// 2. ฟังก์ชันดึงข้อมูลสดจาก TeleRID WebSocket และบันทึกลง MongoDB Atlas
 function syncTelemetryData() {
   console.log(`\n⏰ [${new Date().toLocaleString('th-TH')}] เริ่มกระบวนการดึงข้อมูลสดจาก TeleRID WebSocket...`);
 
@@ -62,7 +69,7 @@ function syncTelemetryData() {
       if (payload.type === 'INIT' && payload.data) {
         const stationsDict = payload.data;
         const keys = Object.keys(stationsDict);
-        console.log(`📥 ได้รับข้อมูลแล้ว! ตรวจพบทั้งหมด ${keys.length} สถานี กำลังบันทึกลง Atlas...`);
+        console.log(`📥 ได้รับข้อมูลแล้ว! ตรวจพบทั้งหมด ${keys.length} สถานี กำลังประมวลผล...`);
 
         const collection = db.collection(COLLECTION_NAME);
         let savedCount = 0;
@@ -75,27 +82,29 @@ function syncTelemetryData() {
           const name = item.name ? item.name.trim() : code;
           const basinName = item.basin?.name || item.project?.name || 'ไม่ระบุ';
 
-          // ตรวจสอบสถานะออนไลน์ / ออฟไลน์
-          const isOnline = item.is_display !== false && (item.measure?.wl || item.measure?.r);
+          // 1. ดึงปริมาณน้ำฝน (07:00-ปัจจุบัน และ สะสม 1 วัน/24ชม.)
+          const rainNow = cleanNumber(item.values?.rain_sum_now?.value) ?? 0.0;
+          let rain1Day = rainNow;
+          if (Array.isArray(item.values?.rain_sum?.value) && item.values.rain_sum.value.length > 0) {
+            const arr = item.values.rain_sum.value;
+            rain1Day = cleanNumber(arr[arr.length - 1]) ?? rainNow;
+          }
+
+          // 2. ดึงระดับน้ำ ม.รทก. และ ม.รสม. ทั้งเหนือน้ำ (U/S) และท้ายน้ำ (D/S)
+          const valList = item.values?.water_level_value_list?.value || [];
+          const wlUpRtk = cleanNumber(valList[0]) ?? cleanNumber(item.values?.water_level?.value);
+          const wlUpRsm = cleanNumber(valList[1]);
+          const wlDownRtk = cleanNumber(valList[2]);
+          const wlDownRsm = cleanNumber(valList[3]);
+
+          // 3. ตรวจสอบสถานะออนไลน์ / ออฟไลน์
+          const hasData = (wlUpRtk !== null) || (rainNow > 0) || (item.values?.water_level?.unixtime > 0);
+          const isOnline = item.is_display !== false && hasData;
           const onlineStatus = isOnline ? 'ออนไลน์' : 'ออฟไลน์';
 
-          // ปริมาณน้ำฝน (07:00-ปัจจุบัน และ สะสม 1 วัน)
-          const rain7toNow = item.values?.rain_sum_now?.value ?? 0.0;
-          const rainSeries = Array.isArray(item.values?.rain_sum?.value) ? item.values.rain_sum.value : [];
-          const rain1Day = rainSeries.length > 0 ? rainSeries[rainSeries.length - 1] : rain7toNow;
-
-          // ระดับน้ำ ม.รทก. และ ม.รสม. ทั้งเหนือน้ำ (U/S) และท้ายน้ำ (D/S)
-          const wlList = item.values?.water_level_value_list?.value || [];
-          const parseVal = (v) => (v === '-' || v === '' || v === undefined || v === null) ? null : parseFloat(v);
-
-          const wlUpRtk = parseVal(wlList[0]) ?? parseVal(item.values?.water_level?.value);
-          const wlUpRsm = parseVal(wlList[1]);
-          const wlDownRtk = parseVal(wlList[2]);
-          const wlDownRsm = parseVal(wlList[3]);
-
-          // เกณฑ์ระดับน้ำ
-          const wlCrit = item.water_level_critical ?? null;
-          const wlWarn = item.water_level_warning ?? null;
+          // 4. เกณฑ์เตือนภัยและวิกฤติ
+          const wlCrit = cleanNumber(item.water_level_critical);
+          const wlWarn = cleanNumber(item.water_level_warning);
           let alertStatus = 'ปกติ';
           if (wlUpRtk !== null) {
             if (wlCrit !== null && wlUpRtk >= wlCrit) alertStatus = 'วิกฤติ';
@@ -115,7 +124,7 @@ function syncTelemetryData() {
                 onlineStatus: onlineStatus,
                 alertStatus: alertStatus,
                 status: alertStatus,
-                rain7toNow: rain7toNow,
+                rain7toNow: rainNow,
                 rain1Day: rain1Day,
                 waterLevelUp_RTK: wlUpRtk,
                 waterLevelUp_RSM: wlUpRsm,
@@ -136,7 +145,7 @@ function syncTelemetryData() {
           savedCount++;
         }
 
-        console.log(`🎉 [สำเร็จ] อัปเดตข้อมูลสดเข้า MongoDB Atlas เรียบร้อย: ${savedCount} สถานี!`);
+        console.log(`🎉 [สำเร็จ] อัปเดตข้อมูลละเอียดเข้า MongoDB Atlas เรียบร้อย: ${savedCount} สถานี!`);
         ws.close();
       }
     } catch (err) {
@@ -149,7 +158,7 @@ function syncTelemetryData() {
   });
 }
 
-// 3. ตั้งเวลาให้ทำงานอัตโนมัติทุก ๆ ต้นชั่วโมง (นาทีที่ 0 ของทุกชั่วโมง เช่น 07:00, 08:00, 09:00...)
+// 3. ตั้งเวลาดึงข้อมูลอัตโนมัติทุกต้นชั่วโมง (07:00, 08:00, 09:00...)
 schedule.scheduleJob('0 * * * *', () => {
   syncTelemetryData();
 });
@@ -182,6 +191,22 @@ app.get('/api/stations/summary', async (req, res) => {
       ok: true,
       summary: { total, online, offline, normal, warning, critical }
     });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Endpoint รับอัปเดตจากภายนอก
+app.post('/api/stations', async (req, res) => {
+  try {
+    const item = req.body;
+    if (!item.stationCode) return res.status(400).json({ ok: false });
+    await db.collection(COLLECTION_NAME).updateOne(
+      { stationCode: item.stationCode },
+      { $set: { ...item, updatedAt: new Date() } },
+      { upsert: true }
+    );
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

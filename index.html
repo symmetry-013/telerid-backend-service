@@ -194,7 +194,12 @@
         if (isCrit) alertBadge = `<span class="text-rose-400 font-bold animate-pulse">วิกฤติ</span>`;
         else if (isWarn) alertBadge = `<span class="text-amber-400 font-semibold">เตือนภัย</span>`;
 
-        const formatNum = (v, unit='') => (v !== null && v !== undefined && !isNaN(v)) ? `${Number(v).toFixed(2)} ${unit}` : '-';
+        // ฟังก์ชันจัดฟอร์แมตตัวเลขใน index.html
+const formatNum = (v, unit = '') => {
+  if (v === null || v === undefined || v === '' || isNaN(v)) return '-';
+  return `${Number(v).toFixed(2)}${unit ? ' ' + unit : ''}`;
+};
+
 
         return `
           <tr class="hover:bg-slate-800/60 transition border-b border-slate-800">
