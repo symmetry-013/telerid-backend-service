@@ -6,8 +6,17 @@ const WebSocket = require('ws');
 const schedule = require('node-schedule');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+// 1. ตั้งค่า CORS ให้เปิดกว้าง รองรับ Preflight (OPTIONS) ทุก Origin 100% ป้องกัน CORS Error
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
+}));
+app.options('*', cors());
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 5000;
@@ -18,14 +27,14 @@ const COLLECTION_NAME = process.env.COLLECTION_NAME || 'stations';
 let db;
 let client;
 
-// ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข
+// ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข ป้องกันค่า "-" หรือค่าว่างกลายเป็น NaN
 function cleanNumber(val) {
   if (val === null || val === undefined || val === '' || val === '-' || val === '--') return null;
   const num = parseFloat(val);
   return isNaN(num) ? null : num;
 }
 
-// 1. เชื่อมต่อฐานข้อมูล MongoDB Atlas
+// 2. เชื่อมต่อฐานข้อมูล MongoDB Atlas
 async function initDatabase() {
   try {
     client = new MongoClient(MONGO_URI);
@@ -34,7 +43,7 @@ async function initDatabase() {
     await db.collection(COLLECTION_NAME).createIndex({ stationCode: 1 }, { unique: true });
     console.log(`✅ [MongoDB Atlas] เชื่อมต่อสำเร็จ: ฐานข้อมูล "${DB_NAME}" คอลเลกชัน "${COLLECTION_NAME}"`);
 
-    // เริ่มดึงข้อมูลรอบแรกทันทีที่เซิร์ฟเวอร์เปิดใช้งาน
+    // ดึงข้อมูลรอบแรกทันทีที่ Server เริ่มทำงาน
     syncTelemetryData();
   } catch (error) {
     console.error('❌ [MongoDB Error]:', error.message);
@@ -43,14 +52,15 @@ async function initDatabase() {
 
 initDatabase();
 
-// 2. ฟังก์ชันดึงข้อมูลสดจาก TeleRID WebSocket และบันทึกลง MongoDB Atlas
+// 3. ฟังก์ชันดึงข้อมูลตรงจาก TeleRID WebSocket และบันทึกลง MongoDB Atlas
 function syncTelemetryData() {
   console.log(`\n⏰ [${new Date().toLocaleString('th-TH')}] เริ่มกระบวนการดึงข้อมูลสดจาก TeleRID WebSocket...`);
 
   const WS_URL = 'wss://telerid.rid.go.th/ws/public/';
   const ws = new WebSocket(WS_URL, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Origin': 'https://rid.go.th'
     }
   });
 
@@ -69,7 +79,7 @@ function syncTelemetryData() {
       if (payload.type === 'INIT' && payload.data) {
         const stationsDict = payload.data;
         const keys = Object.keys(stationsDict);
-        console.log(`📥 ได้รับข้อมูลแล้ว! ตรวจพบทั้งหมด ${keys.length} สถานี กำลังประมวลผล...`);
+        console.log(`📥 ได้รับข้อมูลแล้ว! ตรวจพบทั้งหมด ${keys.length} สถานี กำลังบันทึกลง MongoDB Atlas...`);
 
         const collection = db.collection(COLLECTION_NAME);
         let savedCount = 0;
@@ -145,7 +155,7 @@ function syncTelemetryData() {
           savedCount++;
         }
 
-        console.log(`🎉 [สำเร็จ] อัปเดตข้อมูลละเอียดเข้า MongoDB Atlas เรียบร้อย: ${savedCount} สถานี!`);
+        console.log(`🎉 [สำเร็จ] บันทึกข้อมูลละเอียดเข้าสู่ MongoDB Atlas เรียบร้อย: ${savedCount} สถานี!`);
         ws.close();
       }
     } catch (err) {
@@ -158,12 +168,14 @@ function syncTelemetryData() {
   });
 }
 
-// 3. ตั้งเวลาดึงข้อมูลอัตโนมัติทุกต้นชั่วโมง (07:00, 08:00, 09:00...)
+// 4. ตั้งเวลาดึงข้อมูลอัตโนมัติทุก ๆ ต้นชั่วโมง (นาทีที่ 0 เช่น 07:00, 08:00, 09:00...)
 schedule.scheduleJob('0 * * * *', () => {
   syncTelemetryData();
 });
 
 // --- REST API Endpoints สำหรับหน้า Dashboard ---
+
+// 1. ดึงรายการสถานีทั้งหมด พร้อมรองรับการกรอง
 app.get('/api/stations', async (req, res) => {
   try {
     const { basin, status } = req.query;
@@ -178,6 +190,7 @@ app.get('/api/stations', async (req, res) => {
   }
 });
 
+// 2. ดึงสรุปยอดภาพรวม
 app.get('/api/stations/summary', async (req, res) => {
   try {
     const total = await db.collection(COLLECTION_NAME).countDocuments();
@@ -196,11 +209,18 @@ app.get('/api/stations/summary', async (req, res) => {
   }
 });
 
-// Endpoint รับอัปเดตจากภายนอก
+// 3. Endpoint สั่งซิงค์ข้อมูลผ่านการกดปุ่มหรือคำขอภายนอก
+app.get('/api/sync-now', (req, res) => {
+  syncTelemetryData();
+  res.json({ ok: true, message: 'เริ่มกระบวนการซิงค์ข้อมูลสดแล้ว' });
+});
+
+// 4. Endpoint สำหรับรับข้อมูลรายสถานีจากภายนอก
 app.post('/api/stations', async (req, res) => {
   try {
     const item = req.body;
-    if (!item.stationCode) return res.status(400).json({ ok: false });
+    if (!item.stationCode) return res.status(400).json({ ok: false, message: 'ต้องระบุ stationCode' });
+
     await db.collection(COLLECTION_NAME).updateOne(
       { stationCode: item.stationCode },
       { $set: { ...item, updatedAt: new Date() } },
