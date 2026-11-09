@@ -3,12 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ระบบเฝ้าระวังสถานการณ์น้ำ TeleRID (MongoDB Dashboard)</title>
-  <!-- Tailwind CSS CDN สำหรับตกแต่งหน้าตา UI ให้ทันสมัย -->
+  <title>ระบบเฝ้าระวังสถานการณ์น้ำ TeleRID (ม.รทก / ม.รสม / น้ำฝน)</title>
   <script src="https://tailwindcss.com"></script>
-  <!-- SheetJS สำหรับฟังก์ชันกดดาวน์โหลดเป็นไฟล์ Excel (.xlsx) ตรงจากหน้าเว็บ -->
   <script src="https://jsdelivr.net"></script>
-  <!-- Google Fonts: Sarabun -->
   <link rel="preconnect" href="https://googleapis.com">
   <link rel="preconnect" href="https://gstatic.com" crossorigin>
   <link href="https://googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -16,103 +13,104 @@
     body { font-family: 'Sarabun', sans-serif; }
   </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen p-4 md:p-8">
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4 md:p-6">
 
-  <!-- Header: ส่วนหัวระบบและปุ่มควบคุม -->
-  <header class="max-w-7xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-700 pb-6">
+  <!-- Header -->
+  <header class="max-w-[1400px] mx-auto mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-700 pb-5">
     <div>
-      <h1 class="text-2xl md:text-3xl font-bold text-sky-400 flex items-center gap-3">
-        <span>🌊</span> ระบบติดตามโทรมาตรน้ำ TeleRID
+      <h1 class="text-2xl md:text-3xl font-bold text-sky-400 flex items-center gap-2">
+        <span>🌊</span> โทรมาตรน้ำ TeleRID: รายงานสถานการณ์น้ำ & ปริมาณฝน
       </h1>
-      <p class="text-slate-400 text-sm mt-1">แสดงผลข้อมูลความจริงจากฐานข้อมูล MongoDB ท้องถิ่น (Local Database)</p>
+      <p class="text-slate-400 text-xs md:text-sm mt-1">แสดงผลระดับน้ำ ม.รทก., ม.รสม. (เหนือน้ำ-ท้ายน้ำ) และน้ำฝนสะสมสดจากฐานข้อมูล</p>
     </div>
     <div class="flex flex-wrap items-center gap-3">
       <span id="connection-badge" class="px-3 py-1.5 text-xs rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
-        <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span> กำลังเชื่อมต่อ API...
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span> เชื่อมต่อ API...
       </span>
-      <button onclick="fetchDashboardData()" class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm font-medium transition shadow flex items-center gap-2">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      <button onclick="fetchDashboardData()" class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm font-medium transition shadow">
         รีเฟรชข้อมูล
       </button>
-      <button onclick="exportToExcel()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition shadow flex items-center gap-2">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+      <button onclick="exportToExcel()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition shadow">
         ดาวน์โหลด Excel
       </button>
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto space-y-6">
+  <main class="max-w-[1400px] mx-auto space-y-5">
 
-    <!-- Section 1: การ์ดสรุปยอดสถานะสถานี 4 การ์ด -->
-    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      <!-- การ์ดทั้งหมด -->
-      <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-5 shadow-sm">
-        <div class="text-slate-400 text-sm font-medium">สถานีทั้งหมดที่บันทึก</div>
-        <div id="stat-total" class="text-3xl font-bold text-white mt-2">-</div>
-        <div class="text-xs text-slate-500 mt-1">จำนวนแถวใน MongoDB</div>
+    <!-- แถบการ์ดสรุปยอด -->
+    <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4">
+        <div class="text-slate-400 text-xs">สถานีทั้งหมด</div>
+        <div id="stat-total" class="text-2xl font-bold text-white mt-1">-</div>
       </div>
-      <!-- การ์ดปกติ -->
-      <div class="bg-slate-800/80 border border-emerald-500/30 rounded-xl p-5 shadow-sm">
-        <div class="text-emerald-400 text-sm font-medium flex items-center gap-2">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> สถานะปกติ (Normal)
-        </div>
-        <div id="stat-normal" class="text-3xl font-bold text-emerald-400 mt-2">-</div>
-        <div class="text-xs text-slate-500 mt-1">เกณฑ์ระดับน้ำปลอดภัย</div>
+      <div class="bg-slate-800/80 border border-emerald-500/30 rounded-xl p-4">
+        <div class="text-emerald-400 text-xs">สถานะออนไลน์</div>
+        <div id="stat-online" class="text-2xl font-bold text-emerald-400 mt-1">-</div>
       </div>
-      <!-- การ์ดเตือนภัย -->
-      <div class="bg-slate-800/80 border border-amber-500/30 rounded-xl p-5 shadow-sm">
-        <div class="text-amber-400 text-sm font-medium flex items-center gap-2">
-          <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span> เฝ้าระวัง / เตือนภัย (Warning)
-        </div>
-        <div id="stat-warning" class="text-3xl font-bold text-amber-400 mt-2">-</div>
-        <div class="text-xs text-slate-500 mt-1">เริ่มมีแนวโน้มน้ำล้นตลิ่ง</div>
+      <div class="bg-slate-800/80 border border-slate-600/40 rounded-xl p-4">
+        <div class="text-slate-400 text-xs">สถานะออฟไลน์</div>
+        <div id="stat-offline" class="text-2xl font-bold text-slate-400 mt-1">-</div>
       </div>
-      <!-- การ์ดวิกฤติ -->
-      <div class="bg-slate-800/80 border border-rose-500/30 rounded-xl p-5 shadow-sm">
-        <div class="text-rose-400 text-sm font-medium flex items-center gap-2">
-          <span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span> ภาวะวิกฤติ (Critical)
-        </div>
-        <div id="stat-critical" class="text-3xl font-bold text-rose-400 mt-2">-</div>
-        <div class="text-xs text-slate-500 mt-1">ระดับน้ำเกินวิกฤติตลิ่ง</div>
+      <div class="bg-slate-800/80 border border-teal-500/30 rounded-xl p-4">
+        <div class="text-teal-400 text-xs">เกณฑ์ปกติ</div>
+        <div id="stat-normal" class="text-2xl font-bold text-teal-400 mt-1">-</div>
+      </div>
+      <div class="bg-slate-800/80 border border-amber-500/30 rounded-xl p-4">
+        <div class="text-amber-400 text-xs">เตือนภัย</div>
+        <div id="stat-warning" class="text-2xl font-bold text-amber-400 mt-1">-</div>
+      </div>
+      <div class="bg-slate-800/80 border border-rose-500/30 rounded-xl p-4">
+        <div class="text-rose-400 text-xs">วิกฤติ</div>
+        <div id="stat-critical" class="text-2xl font-bold text-rose-400 mt-1">-</div>
       </div>
     </section>
 
-    <!-- Section 2: แถบค้นหาและตัวกรองสถานะ -->
-    <section class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 flex flex-col md:flex-row gap-4 items-center justify-between">
-      <div class="w-full md:w-96">
-        <input type="text" id="search-input" oninput="handleFilter()" placeholder="ค้นหารหัสสถานี (เช่น TM.202) หรือชื่อสถานี..." 
-          class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-sky-500 transition">
+    <!-- แถบค้นหาและตัวกรอง -->
+    <section class="bg-slate-800/60 border border-slate-700 rounded-xl p-3 flex flex-col md:flex-row gap-3 items-center justify-between">
+      <div class="w-full md:w-80">
+        <input type="text" id="search-input" oninput="handleFilter()" placeholder="ค้นหารหัส หรือชื่อสถานี..." 
+          class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-sky-500">
       </div>
-      <div class="flex items-center gap-3 w-full md:w-auto justify-end">
-        <label for="status-filter" class="text-xs text-slate-400">กรองสถานะ:</label>
-        <select id="status-filter" onchange="handleFilter()" class="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500">
-          <option value="ALL">ทั้งหมดทุกสถานะ</option>
-          <option value="CRITICAL">เฉพาะวิกฤติ (CRITICAL)</option>
-          <option value="WARNING">เฉพาะเตือนภัย (WARNING)</option>
-          <option value="NORMAL">เฉพาะปกติ (NORMAL)</option>
+      <div class="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+        <select id="basin-filter" onchange="handleFilter()" class="bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+          <option value="ALL">ทุกลุ่มน้ำ</option>
         </select>
-        <span id="record-count" class="text-xs text-slate-400 ml-2">แสดง 0 รายการ</span>
+        <select id="online-filter" onchange="handleFilter()" class="bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+          <option value="ALL">สถานะการเชื่อมต่อทั้งหมด</option>
+          <option value="ออนไลน์">เฉพาะออนไลน์</option>
+          <option value="ออฟไลน์">เฉพาะออฟไลน์</option>
+        </select>
+        <select id="status-filter" onchange="handleFilter()" class="bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+          <option value="ALL">ทุกระดับน้ำ</option>
+          <option value="วิกฤติ">เฉพาะวิกฤติ</option>
+          <option value="เตือนภัย">เฉพาะเตือนภัย</option>
+          <option value="ปกติ">เฉพาะปกติ</option>
+        </select>
+        <span id="record-count" class="text-xs text-slate-400 ml-1">แสดง 0 รายการ</span>
       </div>
     </section>
 
-    <!-- Section 3: ตารางแสดงผลข้อมูลสถานี -->
+    <!-- ตารางละเอียด -->
     <section class="bg-slate-800/90 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
       <div class="overflow-x-auto">
-        <table class="w-full text-left text-sm">
-          <thead class="bg-slate-950/70 text-slate-400 uppercase text-xs border-b border-slate-700">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-slate-950/80 text-slate-400 uppercase border-b border-slate-700">
             <tr>
-              <th class="py-3.5 px-4 font-semibold">รหัสสถานี</th>
-              <th class="py-3.5 px-4 font-semibold">ชื่อสถานี</th>
-              <th class="py-3.5 px-4 font-semibold">พารามิเตอร์</th>
-              <th class="py-3.5 px-4 font-semibold text-right">ค่าที่วัดได้</th>
-              <th class="py-3.5 px-4 font-semibold text-center">สถานะ</th>
-              <th class="py-3.5 px-4 font-semibold text-right">เวลาที่บันทึก</th>
+              <th class="py-3 px-3">รหัส / ชื่อสถานี</th>
+              <th class="py-3 px-3">ลุ่มน้ำ</th>
+              <th class="py-3 px-2 text-center">การเชื่อมต่อ</th>
+              <th class="py-3 px-2 text-center">ระดับน้ำ</th>
+              <th class="py-3 px-2 text-right bg-sky-950/30 text-sky-300">ฝน 07:00-ปัจจุบัน</th>
+              <th class="py-3 px-2 text-right bg-sky-950/30 text-sky-300">ฝน 1 วัน (24ชม.)</th>
+              <th class="py-3 px-2 text-right bg-indigo-950/30 text-indigo-300">เหนือน้ำ (ม.รทก.)</th>
+              <th class="py-3 px-2 text-right bg-indigo-950/30 text-indigo-300">เหนือน้ำ (ม.รสม.)</th>
+              <th class="py-3 px-2 text-right bg-purple-950/30 text-purple-300">ท้ายน้ำ (ม.รทก.)</th>
+              <th class="py-3 px-2 text-right bg-purple-950/30 text-purple-300">ท้ายน้ำ (ม.รสม.)</th>
             </tr>
           </thead>
           <tbody id="stations-table-body" class="divide-y divide-slate-700/60 text-slate-300">
-            <tr>
-              <td colspan="6" class="text-center py-8 text-slate-500">กำลังโหลดข้อมูลสถานีจากเซิร์ฟเวอร์...</td>
-            </tr>
+            <tr><td colspan="10" class="text-center py-8 text-slate-500">กำลังโหลดข้อมูล...</td></tr>
           </tbody>
         </table>
       </div>
@@ -120,153 +118,155 @@
 
   </main>
 
-    <!-- วางส่วนนี้ก่อนแท็ก </body> -->
+    <!-- นำส่วนนี้ไปวางก่อนแท็ก </body> -->
   <script>
-    const API_BASE_URL = 'http://localhost:5000/api';
+    const API_BASE_URL = window.location.origin.includes('localhost') ? 'http://localhost:5000/api' : '/api';
     let allStations = [];
     let currentRenderedStations = [];
 
-    // ฟังก์ชันดึงข้อมูลจาก API หลังบ้าน
     async function fetchDashboardData() {
       const badge = document.getElementById('connection-badge');
       try {
         badge.className = "px-3 py-1.5 text-xs rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center gap-1.5";
-        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-sky-400 animate-spin"></span> กำลังดึงข้อมูล...`;
+        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-sky-400 animate-spin"></span> ซิงค์ข้อมูล...`;
 
-        // 1. ดึงสรุปยอดตัวเลข 4 การ์ด
-        const summaryRes = await fetch(`${API_BASE_URL}/stations/summary`);
-        if (summaryRes.ok) {
-          const summaryJson = await summaryRes.json();
-          const s = summaryJson.summary || {};
-          document.getElementById('stat-total').innerText = s.total || 0;
-          document.getElementById('stat-normal').innerText = s.normal || 0;
-          document.getElementById('stat-warning').innerText = s.warning || 0;
-          document.getElementById('stat-critical').innerText = s.critical || 0;
-        }
+        const res = await fetch(`${API_BASE_URL}/stations`);
+        if (!res.ok) throw new Error('API Error');
+        const json = await res.json();
+        allStations = json.data || [];
 
-        // 2. ดึงรายการสถานีทั้งหมด
-        const stationsRes = await fetch(`${API_BASE_URL}/stations`);
-        if (!stationsRes.ok) throw new Error('API Response not OK');
-        
-        const stationsJson = await stationsRes.json();
-        allStations = stationsJson.data || [];
+        // คำนวณสรุปยอด
+        let total = allStations.length;
+        let online = 0, offline = 0;
+        let normal = 0, warning = 0, critical = 0;
+        const basins = new Set();
+
+        allStations.forEach(s => {
+          if (s.onlineStatus === 'ออนไลน์') online++; else offline++;
+          if (s.alertStatus === 'วิกฤติ' || s.status === 'วิกฤติ') critical++;
+          else if (s.alertStatus === 'เตือนภัย' || s.status === 'เตือนภัย') warning++;
+          else normal++;
+
+          if (s.basin && s.basin !== 'ไม่ระบุ') basins.add(s.basin);
+        });
+
+        document.getElementById('stat-total').innerText = total;
+        document.getElementById('stat-online').innerText = online;
+        document.getElementById('stat-offline').innerText = offline;
+        document.getElementById('stat-normal').innerText = normal;
+        document.getElementById('stat-warning').innerText = warning;
+        document.getElementById('stat-critical').innerText = critical;
+
+        // ดรอปดาวน์ลุ่มน้ำ
+        const basinSelect = document.getElementById('basin-filter');
+        basinSelect.innerHTML = '<option value="ALL">ทุกลุ่มน้ำ</option>' + 
+          Array.from(basins).sort().map(b => `<option value="${b}">${b}</option>`).join('');
 
         handleFilter();
 
         badge.className = "px-3 py-1.5 text-xs rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5";
-        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span> API ออนไลน์ปกติ`;
-      } catch (err) {
-        console.error('Fetch Error:', err);
+        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span> ข้อมูลสดสมบูรณ์`;
+      } catch (e) {
         badge.className = "px-3 py-1.5 text-xs rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1.5";
-        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-400"></span> ไม่สามารถเชื่อมต่อ API ได้`;
-        
-        document.getElementById('stations-table-body').innerHTML = `
-          <tr>
-            <td colspan="6" class="text-center py-8 text-rose-400">
-              ❌ ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ (โปรดตรวจสอบว่าเปิดคำสั่ง <code>node server.js</code> อยู่หรือไม่)
-            </td>
-          </tr>
-        `;
+        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-400"></span> ขัดข้อง`;
       }
     }
 
-    // ฟังก์ชันวาดตารางลงบนหน้าจอ
     function renderTable(list) {
       currentRenderedStations = list;
       const tbody = document.getElementById('stations-table-body');
       document.getElementById('record-count').innerText = `แสดง ${list.length} รายการ`;
 
       if (list.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-slate-500">ไม่พบข้อมูลที่ตรงกับเงื่อนไขการค้นหา</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-slate-500">ไม่พบข้อมูลที่ตรงกับเงื่อนไข</td></tr>`;
         return;
       }
 
       tbody.innerHTML = list.map(item => {
-        const statusUpper = String(item.status || '').toUpperCase();
-        const isCrit = statusUpper === 'CRITICAL' || item.status === 'วิกฤติ';
-        const isWarn = statusUpper === 'WARNING' || item.status === 'เตือนภัย';
-        
-        let statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">ปกติ</span>`;
-        if (isCrit) {
-          statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30 font-semibold animate-pulse">วิกฤติ</span>`;
-        } else if (isWarn) {
-          statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">เตือนภัย</span>`;
-        }
+        const isOnline = item.onlineStatus === 'ออนไลน์';
+        const connBadge = isOnline 
+          ? `<span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">ออนไลน์</span>`
+          : `<span class="px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">ออฟไลน์</span>`;
 
-        const paramText = String(item.parameter || '');
-        const paramUnit = paramText.startsWith('WL') ? 'ม.รทก.' : (paramText.startsWith('RF') ? 'มม.' : '');
-        const displayVal = typeof item.value === 'number' ? item.value.toFixed(2) : (item.value || '-');
+        const isCrit = item.alertStatus === 'วิกฤติ' || item.status === 'วิกฤติ';
+        const isWarn = item.alertStatus === 'เตือนภัย' || item.status === 'เตือนภัย';
+        let alertBadge = `<span class="text-teal-400">ปกติ</span>`;
+        if (isCrit) alertBadge = `<span class="text-rose-400 font-bold animate-pulse">วิกฤติ</span>`;
+        else if (isWarn) alertBadge = `<span class="text-amber-400 font-semibold">เตือนภัย</span>`;
+
+        const formatNum = (v, unit='') => (v !== null && v !== undefined && !isNaN(v)) ? `${Number(v).toFixed(2)} ${unit}` : '-';
 
         return `
-          <tr class="hover:bg-slate-800 transition border-b border-slate-700/60">
-            <td class="py-3 px-4 font-mono font-medium text-sky-400">${item.stationCode || '-'}</td>
-            <td class="py-3 px-4 font-medium text-slate-200">${item.stationName || '-'}</td>
-            <td class="py-3 px-4 text-slate-400 text-xs">${item.parameter || '-'}</td>
-            <td class="py-3 px-4 text-right font-mono font-semibold text-slate-100">
-              ${displayVal} <span class="text-xs text-slate-500 font-normal">${paramUnit}</span>
+          <tr class="hover:bg-slate-800/60 transition border-b border-slate-800">
+            <td class="py-2.5 px-3">
+              <div class="font-mono font-medium text-sky-400">${item.stationCode}</div>
+              <div class="text-[11px] text-slate-300">${item.stationName}</div>
             </td>
-            <td class="py-3 px-4 text-center">${statusBadge}</td>
-            <td class="py-3 px-4 text-right text-xs text-slate-400">${item.recordedAt || '-'}</td>
+            <td class="py-2.5 px-3 text-slate-400">${item.basin || '-'}</td>
+            <td class="py-2.5 px-2 text-center">${connBadge}</td>
+            <td class="py-2.5 px-2 text-center">${alertBadge}</td>
+            <td class="py-2.5 px-2 text-right font-mono bg-sky-950/20 text-sky-300">${formatNum(item.rain7toNow, 'มม.')}</td>
+            <td class="py-2.5 px-2 text-right font-mono bg-sky-950/20 text-sky-200">${formatNum(item.rain1Day, 'มม.')}</td>
+            <td class="py-2.5 px-2 text-right font-mono bg-indigo-950/20 text-indigo-200 font-semibold">${formatNum(item.waterLevelUp_RTK)}</td>
+            <td class="py-2.5 px-2 text-right font-mono bg-indigo-950/20 text-slate-300">${formatNum(item.waterLevelUp_RSM)}</td>
+            <td class="py-2.5 px-2 text-right font-mono bg-purple-950/20 text-purple-200">${formatNum(item.waterLevelDown_RTK)}</td>
+            <td class="py-2.5 px-2 text-right font-mono bg-purple-950/20 text-slate-300">${formatNum(item.waterLevelDown_RSM)}</td>
           </tr>
         `;
       }).join('');
     }
 
-    // ฟังก์ชันค้นหาและกรองข้อมูล
     function handleFilter() {
       const keyword = document.getElementById('search-input').value.toLowerCase().trim();
-      const statusType = document.getElementById('status-filter').value;
+      const basin = document.getElementById('basin-filter').value;
+      const conn = document.getElementById('online-filter').value;
+      const alertState = document.getElementById('status-filter').value;
 
       const filtered = allStations.filter(st => {
         const code = String(st.stationCode || '').toLowerCase();
         const name = String(st.stationName || '').toLowerCase();
         const matchSearch = code.includes(keyword) || name.includes(keyword);
 
-        const statusUpper = String(st.status || '').toUpperCase();
-        let matchStatus = true;
-        if (statusType === 'CRITICAL') {
-          matchStatus = statusUpper === 'CRITICAL' || st.status === 'วิกฤติ';
-        } else if (statusType === 'WARNING') {
-          matchStatus = statusUpper === 'WARNING' || st.status === 'เตือนภัย';
-        } else if (statusType === 'NORMAL') {
-          matchStatus = statusUpper === 'NORMAL' || st.status === 'ปกติ';
+        const matchBasin = (basin === 'ALL') || (st.basin === basin);
+        const matchConn = (conn === 'ALL') || (st.onlineStatus === conn);
+
+        let matchAlert = true;
+        if (alertState !== 'ALL') {
+          matchAlert = (st.alertStatus === alertState) || (st.status === alertState);
         }
 
-        return matchSearch && matchStatus;
+        return matchSearch && matchBasin && matchConn && matchAlert;
       });
 
       renderTable(filtered);
     }
 
-    // ฟังก์ชันส่งออกตารางเป็นไฟล์ Excel (.xlsx)
     function exportToExcel() {
-      if (currentRenderedStations.length === 0) {
-        alert('ไม่มีข้อมูลสำหรับดาวน์โหลด');
-        return;
-      }
+      if (currentRenderedStations.length === 0) return alert('ไม่มีข้อมูลสำหรับดาวน์โหลด');
 
-      const excelData = currentRenderedStations.map(item => ({
-        'รหัสสถานี': item.stationCode || '',
-        'ชื่อสถานี': item.stationName || '',
-        'พารามิเตอร์': item.parameter || '',
-        'ค่าที่วัดได้': item.value ?? '',
-        'สถานะ': item.status || '',
-        'วันเวลาที่บันทึก': item.recordedAt || ''
+      const data = currentRenderedStations.map(s => ({
+        'รหัสสถานี': s.stationCode || '',
+        'ชื่อสถานี': s.stationName || '',
+        'ลุ่มน้ำ': s.basin || '',
+        'การเชื่อมต่อ': s.onlineStatus || '',
+        'สถานะระดับน้ำ': s.alertStatus || s.status || '',
+        'ฝน 07:00-ปัจจุบัน (มม.)': s.rain7toNow ?? '',
+        'ฝน 1 วันสะสม (มม.)': s.rain1Day ?? '',
+        'ระดับเหนือน้ำ (ม.รทก.)': s.waterLevelUp_RTK ?? '',
+        'ระดับเหนือน้ำ (ม.รสม.)': s.waterLevelUp_RSM ?? '',
+        'ระดับท้ายน้ำ (ม.รทก.)': s.waterLevelDown_RTK ?? '',
+        'ระดับท้ายน้ำ (ม.รสม.)': s.waterLevelDown_RSM ?? '',
+        'อัปเดตล่าสุด': s.updatedAt || ''
       }));
 
-      const worksheet = XLSX.utils.json_to_sheet(excelData);
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'รายการสถานี');
-
-      const fileName = `รายงานสถานะโทรมาตร_${new Date().toISOString().slice(0, 10)}.xlsx`;
-      XLSX.writeFile(workbook, fileName);
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'ข้อมูลโทรมาตร');
+      XLSX.writeFile(wb, `โทรมาตรน้ำ_${new Date().toISOString().slice(0, 10)}.xlsx`);
     }
 
-    // สั่งโหลดข้อมูลอัตโนมัติทันทีที่เปิดหน้าเว็บ และตั้งเวลารีเฟรชทุก 1 นาที
-    window.addEventListener('DOMContentLoaded', () => {
-      fetchDashboardData();
-      setInterval(fetchDashboardData, 60000);
-    });
+        window.addEventListener('DOMContentLoaded', fetchDashboardData);
   </script>
 </body>
 </html>
+

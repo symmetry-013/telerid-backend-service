@@ -3,42 +3,30 @@ const fs = require('fs');
 const path = require('path');
 const { MongoClient } = require('mongodb');
 
-const MONGO_URI = 'mongodb://127.0.0.1:27017';
-const DB_NAME = 'telerid_db';
-const COLLECTION_NAME = 'stations';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017';
+const DB_NAME = process.env.DB_NAME || 'telerid_db';
+const COLLECTION_NAME = process.env.COLLECTION_NAME || 'stations';
 
 const filePath = path.join(__dirname, 'telerid_ws_init.json');
 
-async function importWsInitData() {
+async function importWsDetailedData() {
   if (!fs.existsSync(filePath)) {
     console.error('❌ ไม่พบไฟล์ telerid_ws_init.json');
     return;
   }
 
-  console.log('📥 กำลังอ่านและถอดรหัสข้อมูล WebSocket INIT...');
+  console.log('📥 กำลังสกัดข้อมูลรายละเอียดโทรมาตรขั้นสูง...');
   const fileContent = fs.readFileSync(filePath, 'utf8').trim();
 
-  let rootObj;
-  try {
-    rootObj = JSON.parse(fileContent);
-  } catch (e) {
-    console.error('❌ รูปแบบ JSON ผิดพลาด:', e.message);
-    return;
-  }
-
-  // รองรับทั้งกรณีที่เป็นข้อความครอบ string ซ้ำ ("message": "{\"type\": ...}") หรือ JSON Object ตรงๆ
+  let rootObj = JSON.parse(fileContent);
   let payload = rootObj;
   if (typeof rootObj.message === 'string') {
-    try {
-      payload = JSON.parse(rootObj.message);
-    } catch (e) {
-      payload = rootObj;
-    }
+    try { payload = JSON.parse(rootObj.message); } catch (e) { payload = rootObj; }
   }
 
   const stationsDict = payload.data || payload;
   const stationKeys = Object.keys(stationsDict);
-  console.log(`📊 ตรวจพบสถานีในชุดข้อมูลทั้งหมด: ${stationKeys.length} สถานี`);
+  console.log(`📊 ตรวจพบข้อมูลทั้งหมด: ${stationKeys.length} สถานี`);
 
   const client = new MongoClient(MONGO_URI);
   try {
@@ -54,28 +42,35 @@ async function importWsInitData() {
       const code = item.code.trim();
       const name = item.name ? item.name.trim() : code;
       const basinName = item.basin?.name || item.project?.name || 'ไม่ระบุ';
-      
-      // ดึงค่าน้ำปัจจุบัน
-      const wlVal = typeof item.values?.water_level?.value === 'number'
-        ? item.values.water_level.value
-        : parseFloat(item.values?.water_level?.value || 0);
 
-      // ดึงค่าน้ำฝนสะสมล่าสุด
-      const rainNow = item.values?.rain_sum_now?.value ?? 0;
-      const rainSeries = Array.isArray(item.values?.rain_sum?.value)
-        ? item.values.rain_sum.value
-        : [];
-      const rain24h = rainSeries.length > 0 ? rainSeries[rainSeries.length - 1] : rainNow;
+      // 1. ตรวจสอบสถานะ ออนไลน์ / ออฟไลน์
+      // ระบบ TeleRID: หากมี timestamp ล่าสุด หรือ measure/display ทำงาน ปกติถือว่าออนไลน์
+      const isOnline = item.is_display !== false && (item.measure?.wl || item.measure?.r);
+      const onlineStatus = isOnline ? 'ออนไลน์' : 'ออฟไลน์';
 
-      // ตรวจสอบสถานะ (เทียบกับเกณฑ์วิกฤติ/เตือนภัย)
-      const wlWarning = item.water_level_warning ?? null;
-      const wlCritical = item.water_level_critical ?? null;
+      // 2. ค่าน้ำฝน: 7 โมง - ปัจจุบัน และ ฝนสะสม 1 วัน (24 ชม.)
+      const rain7toNow = item.values?.rain_sum_now?.value ?? 0.0;
+      const rainSeries = Array.isArray(item.values?.rain_sum?.value) ? item.values.rain_sum.value : [];
+      // rain_sum index ล่าสุดคือสะสม 24 ชม. (1 วัน)
+      const rain1Day = rainSeries.length > 0 ? rainSeries[rainSeries.length - 1] : rain7toNow;
 
-      let status = 'ปกติ';
-      if (wlCritical !== null && wlVal >= wlCritical) {
-        status = 'วิกฤติ';
-      } else if (wlWarning !== null && wlVal >= wlWarning) {
-        status = 'เตือนภัย';
+      // 3. ระดับน้ำ: ม.รทก. และ ม.รสม. ทั้งเหนือน้ำ (U/S) และท้ายน้ำ (D/S)
+      // โครงสร้าง TeleRID ใน water_level_value_list.value: [เหนือน้ำ ม.รทก, เหนือน้ำ ม.รสม, ท้ายน้ำ ม.รทก, ท้ายน้ำ ม.รสม]
+      const wlList = item.values?.water_level_value_list?.value || [];
+      const parseVal = (v) => (v === '-' || v === '' || v === undefined || v === null) ? null : parseFloat(v);
+
+      const wlUpRtk = parseVal(wlList[0]) ?? parseVal(item.values?.water_level?.value);
+      const wlUpRsm = parseVal(wlList[1]);
+      const wlDownRtk = parseVal(wlList[2]);
+      const wlDownRsm = parseVal(wlList[3]);
+
+      // 4. คำนวณเกณฑ์สถานะวิกฤติ/เตือนภัย
+      const wlCrit = item.water_level_critical ?? null;
+      const wlWarn = item.water_level_warning ?? null;
+      let alertStatus = 'ปกติ';
+      if (wlUpRtk !== null) {
+        if (wlCrit !== null && wlUpRtk >= wlCrit) alertStatus = 'วิกฤติ';
+        else if (wlWarn !== null && wlUpRtk >= wlWarn) alertStatus = 'เตือนภัย';
       }
 
       await collection.updateOne(
@@ -88,17 +83,20 @@ async function importWsInitData() {
             province: item.province || '',
             amphur: item.amphur || '',
             tambon: item.tambon || '',
-            parameter: 'WL_UP',
-            value: isNaN(wlVal) ? 0 : wlVal,
-            rain24h: rain24h,
-            warningThreshold: wlWarning,
-            criticalThreshold: wlCritical,
-            status: status,
+            onlineStatus: onlineStatus,     // ออนไลน์ / ออฟไลน์
+            alertStatus: alertStatus,       // ปกติ / เตือนภัย / วิกฤติ
+            rain7toNow: rain7toNow,         // น้ำฝน 07:00 - ปัจจุบัน (มม.)
+            rain1Day: rain1Day,             // น้ำฝนสะสม 1 วัน (มม.)
+            waterLevelUp_RTK: wlUpRtk,      // เหนือน้ำ ม.รทก.
+            waterLevelUp_RSM: wlUpRsm,      // เหนือน้ำ ม.รสม.
+            waterLevelDown_RTK: wlDownRtk,  // ท้ายน้ำ ม.รทก.
+            waterLevelDown_RSM: wlDownRsm,  // ท้ายน้ำ ม.รสม.
+            warningThreshold: wlWarn,
+            criticalThreshold: wlCrit,
             location: {
               lat: item.location?.y || null,
               lng: item.location?.x || null
             },
-            recordedAt: new Date().toLocaleString('th-TH'),
             updatedAt: new Date()
           }
         },
@@ -107,13 +105,12 @@ async function importWsInitData() {
       count++;
     }
 
-    console.log(`\n🎉 บันทึกสถานีทั้งหมดเข้า MongoDB สำเร็จเรียบร้อย: ${count} สถานี!`);
-    console.log('👉 เปิดดูผลลัพธ์สดได้ทันทีที่ index.html หรือกดปุ่ม "รีเฟรชข้อมูล"');
+    console.log(`✅ อัปเดตข้อมูลละเอียดทั้ง 921 สถานีเข้า MongoDB สำเร็จ: ${count} รายการ!`);
   } catch (err) {
-    console.error('💥 เกิดข้อผิดพลาดขณะบันทึกเข้าฐานข้อมูล:', err.message);
+    console.error('💥 เกิดข้อผิดพลาด:', err.message);
   } finally {
     await client.close();
   }
 }
 
-importWsInitData();
+importWsDetailedData();
