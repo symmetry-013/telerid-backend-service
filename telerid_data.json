@@ -1,0 +1,57 @@
+[
+  {
+    "type": "CRITICAL",
+    "data": {
+      "id": 341914098,
+      "station": { "id": 354, "code": "TTC08", "name": "ที่ว่าการ อ.นครชัยศรี" },
+      "value": 2.455,
+      "is_critical": true,
+      "datetime": "2026-11-09T16:30:00+07:00",
+      "parameter": "WL_UP"
+    }
+  },
+  {
+    "type": "WARNING",
+    "data": {
+      "id": 341914092,
+      "station": { "id": 353, "code": "TTC07", "name": "โรงเรียนวัดบางปลา" },
+      "value": 3.089,
+      "is_warning": true,
+      "datetime": "2026-11-09T16:30:00+07:00",
+      "parameter": "WL_UP"
+    }
+  },
+  {
+    "type": "CRITICAL",
+    "data": {
+      "id": 341913939,
+      "station": { "id": 398, "code": "TK.74", "name": "โรงเรียนบ้านลาดใหญ่สามัคคี" },
+      "value": 1.341,
+      "is_critical": true,
+      "datetime": "2026-11-09T16:30:00+07:00",
+      "parameter": "WL_UP"
+    }
+  },
+  {
+    "type": "CRITICAL",
+    "data": {
+      "id": 341913205,
+      "station": { "id": 569, "code": "TM.204 (U/S), (D/S)", "name": "Tฝายชุมพวง (U/S), (D/S)" },
+      "value": 143.86,
+      "is_critical": true,
+      "datetime": "2026-11-09T16:30:00+07:00",
+      "parameter": "WL_UP"
+    }
+  },
+  {
+    "type": "CRITICAL",
+    "data": {
+      "id": 341911289,
+      "station": { "id": 567, "code": "TM.202 (U/S), (D/S)", "name": "Tเขื่อนพิมาย (U/S), (D/S)" },
+      "value": 152.70,
+      "is_critical": true,
+      "datetime": "2026-11-09T16:30:00+07:00",
+      "parameter": "WL_UP"
+    }
+  }
+]

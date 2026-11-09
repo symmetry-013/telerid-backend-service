@@ -1,0 +1,66 @@
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const csv = require('csv-parser');
+const { MongoClient } = require('mongodb');
+
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017';
+const DB_NAME = process.env.DB_NAME || 'telerid_db';
+const COLLECTION_NAME = process.env.COLLECTION_NAME || 'stations';
+
+// พิกัดไฟล์ CSV จาก Downloads
+const csvFilePath = path.join(
+  process.env.DOWNLOADS_PATH || 'C:/Users/Tele_04/Downloads',
+  'telerid_real_alarm.csv'
+);
+
+async function runImport() {
+  if (!fs.existsSync(csvFilePath)) {
+    console.error(`❌ ไม่พบไฟล์ที่พิกัด: ${csvFilePath}`);
+    return;
+  }
+
+  const client = new MongoClient(MONGO_URI);
+  await client.connect();
+  const db = client.db(DB_NAME);
+  const collection = db.collection(COLLECTION_NAME);
+
+  console.log(`📥 กำลังอ่านไฟล์ CSV: ${csvFilePath} ...`);
+  const records = [];
+
+  fs.createReadStream(csvFilePath)
+    .pipe(csv())
+    .on('data', (row) => {
+      // แมปหัวตารางจาก CSV เข้า Schema ของ MongoDB
+      records.push({
+        stationCode: row.Station_Code || row['Station Code'] || 'UNKNOWN',
+        stationName: row.Station_Name || row['Station Name'] || '',
+        parameter: row.Parameter || '',
+        value: parseFloat(row.Value) || 0,
+        status: row.Type || 'NORMAL',
+        recordedAt: row.DateTime || new Date().toISOString(),
+        updatedAt: new Date()
+      });
+    })
+    .on('end', async () => {
+      console.log(`📊 อ่านข้อมูลได้ทั้งหมด ${records.length} แถว กำลังบันทึกลง MongoDB...`);
+      
+      let successCount = 0;
+      for (const item of records) {
+        if (item.stationCode !== 'UNKNOWN') {
+          await collection.updateOne(
+            { stationCode: item.stationCode },
+            { $set: item },
+            { upsert: true }
+          );
+          successCount++;
+        }
+      }
+
+      console.log(`✅ อัปเดตข้อมูลเข้า MongoDB สำเร็จเรียบร้อย: ${successCount} รายการ!`);
+      await client.close();
+      process.exit(0);
+    });
+}
+
+runImport();
