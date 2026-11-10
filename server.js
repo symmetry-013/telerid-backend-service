@@ -27,24 +27,26 @@ const COLLECTION_NAME = process.env.COLLECTION_NAME || 'stations';
 let db;
 let client;
 
-// ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข ป้องกันค่า "-" หรือค่าว่างกลายเป็น NaN
+// 2. ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข ป้องกันค่า "-" หรือค่าว่างกลายเป็น NaN พร้อมดักค่า Anomaly
 function cleanNumber(val) {
   if (val === null || val === undefined || val === '' || val === '-' || val === '--') return null;
   const num = parseFloat(val);
-  return isNaN(num) ? null : num;
+  // ดักจับค่าที่ไม่ใช่ตัวเลข หรือค่า Anomaly พื้นฐานจากเซ็นเซอร์
+  if (isNaN(num) || num === -999 || num === 999) return null; 
+  return num;
 }
 
-// 2. เชื่อมต่อฐานข้อมูล MongoDB Atlas
+// 3. เชื่อมต่อฐานข้อมูล MongoDB
 async function initDatabase() {
   try {
     client = new MongoClient(MONGO_URI);
     await client.connect();
     db = client.db(DB_NAME);
     await db.collection(COLLECTION_NAME).createIndex({ stationCode: 1 }, { unique: true });
-    console.log(`✅ [MongoDB Atlas] เชื่อมต่อสำเร็จ: ฐานข้อมูล "${DB_NAME}" คอลเลกชัน "${COLLECTION_NAME}"`);
+    console.log(`✅ [MongoDB] เชื่อมต่อสำเร็จ: ฐานข้อมูล "${DB_NAME}" คอลเลกชัน "${COLLECTION_NAME}"`);
 
-    // ดึงข้อมูลรอบแรกทันทีที่ Server เริ่มทำงาน
-    syncTelemetryData();
+    // ดึงข้อมูลรอบแรกทันทีที่ Server เริ่มทำงานโดยไม่ขวาง Thread หลัก
+    syncTelemetryData().catch(err => console.error('❌ Initial Sync Error:', err.message));
   } catch (error) {
     console.error('❌ [MongoDB Error]:', error.message);
   }
@@ -52,125 +54,166 @@ async function initDatabase() {
 
 initDatabase();
 
-// 3. ฟังก์ชันดึงข้อมูลตรงจาก TeleRID WebSocket และบันทึกลง MongoDB Atlas
+// 4. Core Sync Function: ดึงข้อมูลตรงจาก TeleRID WebSocket และบันทึกลง MongoDB แบบ BulkWrite
 function syncTelemetryData() {
-  console.log(`\n⏰ [${new Date().toLocaleString('th-TH')}] เริ่มกระบวนการดึงข้อมูลสดจาก TeleRID WebSocket...`);
+  return new Promise((resolve, reject) => {
+    console.log(`\n⏰ [${new Date().toLocaleString('th-TH')}] เริ่มกระบวนการดึงข้อมูลสดจาก TeleRID WebSocket...`);
 
-  const WS_URL = 'wss://telerid.rid.go.th/ws/public/';
-  const ws = new WebSocket(WS_URL, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Origin': 'https://rid.go.th'
-    }
-  });
-
-  ws.on('open', () => {
-    console.log('📡 เชื่อมต่อท่อ TeleRID WebSocket สำเร็จ! กำลังรอรับชุดข้อมูล INIT...');
-  });
-
-  ws.on('message', async (data) => {
-    try {
-      const parsed = JSON.parse(data.toString());
-      let payload = parsed;
-      if (typeof parsed.message === 'string') {
-        try { payload = JSON.parse(parsed.message); } catch (e) { payload = parsed; }
+    const WS_URL = 'wss://telerid.rid.go.th/ws/public/';
+    const ws = new WebSocket(WS_URL, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Origin': 'https://rid.go.th'
       }
+    });
 
-      if (payload.type === 'INIT' && payload.data) {
-        const stationsDict = payload.data;
-        const keys = Object.keys(stationsDict);
-        console.log(`📥 ได้รับข้อมูลแล้ว! ตรวจพบทั้งหมด ${keys.length} สถานี กำลังบันทึกลง MongoDB Atlas...`);
+    let isResolved = false;
 
-        const collection = db.collection(COLLECTION_NAME);
-        let savedCount = 0;
+    // Fallback Timeout 30 วินาที ป้องกัน Connection ค้าง
+    const timeoutId = setTimeout(() => {
+      if (!isResolved) {
+        ws.terminate(); // บังคับตัดท่อทันที
+        console.error('❌ [Timeout] ไม่ได้รับการตอบกลับจาก TeleRID ภายใน 30 วินาที');
+        reject(new Error('WebSocket Connection Timeout (30s)'));
+      }
+    }, 30000);
 
-        for (const k of keys) {
-          const item = stationsDict[k];
-          if (!item || !item.code) continue;
+    ws.on('open', () => {
+      console.log('📡 เชื่อมต่อท่อ TeleRID WebSocket สำเร็จ! กำลังรอรับชุดข้อมูล INIT...');
+    });
 
-          const code = item.code.trim();
-          const name = item.name ? item.name.trim() : code;
-          const basinName = item.basin?.name || item.project?.name || 'ไม่ระบุ';
-
-          // 1. ดึงปริมาณน้ำฝน (07:00-ปัจจุบัน และ สะสม 1 วัน/24ชม.)
-          const rainNow = cleanNumber(item.values?.rain_sum_now?.value) ?? 0.0;
-          let rain1Day = rainNow;
-          if (Array.isArray(item.values?.rain_sum?.value) && item.values.rain_sum.value.length > 0) {
-            const arr = item.values.rain_sum.value;
-            rain1Day = cleanNumber(arr[arr.length - 1]) ?? rainNow;
-          }
-
-          // 2. ดึงระดับน้ำ ม.รทก. และ ม.รสม. ทั้งเหนือน้ำ (U/S) และท้ายน้ำ (D/S)
-          const valList = item.values?.water_level_value_list?.value || [];
-          const wlUpRtk = cleanNumber(valList[0]) ?? cleanNumber(item.values?.water_level?.value);
-          const wlUpRsm = cleanNumber(valList[1]);
-          const wlDownRtk = cleanNumber(valList[2]);
-          const wlDownRsm = cleanNumber(valList[3]);
-
-          // 3. ตรวจสอบสถานะออนไลน์ / ออฟไลน์
-          const hasData = (wlUpRtk !== null) || (rainNow > 0) || (item.values?.water_level?.unixtime > 0);
-          const isOnline = item.is_display !== false && hasData;
-          const onlineStatus = isOnline ? 'ออนไลน์' : 'ออฟไลน์';
-
-          // 4. เกณฑ์เตือนภัยและวิกฤติ
-          const wlCrit = cleanNumber(item.water_level_critical);
-          const wlWarn = cleanNumber(item.water_level_warning);
-          let alertStatus = 'ปกติ';
-          if (wlUpRtk !== null) {
-            if (wlCrit !== null && wlUpRtk >= wlCrit) alertStatus = 'วิกฤติ';
-            else if (wlWarn !== null && wlUpRtk >= wlWarn) alertStatus = 'เตือนภัย';
-          }
-
-          await collection.updateOne(
-            { stationCode: code },
-            {
-              $set: {
-                stationCode: code,
-                stationName: name,
-                basin: basinName,
-                province: item.province || '',
-                amphur: item.amphur || '',
-                tambon: item.tambon || '',
-                onlineStatus: onlineStatus,
-                alertStatus: alertStatus,
-                status: alertStatus,
-                rain7toNow: rainNow,
-                rain1Day: rain1Day,
-                waterLevelUp_RTK: wlUpRtk,
-                waterLevelUp_RSM: wlUpRsm,
-                waterLevelDown_RTK: wlDownRtk,
-                waterLevelDown_RSM: wlDownRsm,
-                warningThreshold: wlWarn,
-                criticalThreshold: wlCrit,
-                location: {
-                  lat: item.location?.y || null,
-                  lng: item.location?.x || null
-                },
-                recordedAt: new Date().toLocaleString('th-TH'),
-                updatedAt: new Date()
-              }
-            },
-            { upsert: true }
-          );
-          savedCount++;
+    ws.on('message', async (data) => {
+      try {
+        const parsed = JSON.parse(data.toString());
+        let payload = parsed;
+        if (typeof parsed.message === 'string') {
+          try { payload = JSON.parse(parsed.message); } catch (e) { payload = parsed; }
         }
 
-        console.log(`🎉 [สำเร็จ] บันทึกข้อมูลละเอียดเข้าสู่ MongoDB Atlas เรียบร้อย: ${savedCount} สถานี!`);
-        ws.close();
-      }
-    } catch (err) {
-      console.error('❌ เกิดข้อผิดพลาดในการประมวลผลข้อมูล:', err.message);
-    }
-  });
+        if (payload.type === 'INIT' && payload.data) {
+          isResolved = true;
+          clearTimeout(timeoutId);
+          ws.close(); // ปิดการเชื่อมต่อทันทีที่ได้ Snapshot 921 สถานี เพื่อคืนทรัพยากร
 
-  ws.on('error', (err) => {
-    console.error('❌ ข้อผิดพลาด TeleRID WebSocket:', err.message);
+          const stationsDict = payload.data;
+          const keys = Object.keys(stationsDict);
+          console.log(`📥 ได้รับข้อมูลแล้ว! ตรวจพบทั้งหมด ${keys.length} สถานี กำลังเตรียม BulkWrite...`);
+
+          const bulkOps = keys.map(k => {
+            const item = stationsDict[k];
+            if (!item || !item.code) return null;
+
+            const code = item.code.trim();
+            const name = item.name ? item.name.trim() : code;
+            const basinName = item.basin?.name || item.project?.name || 'ไม่ระบุ';
+
+            // จัดการค่าน้ำฝน
+            const rainNow = cleanNumber(item.values?.rain_sum_now?.value) ?? 0.0;
+            let rain1Day = rainNow;
+            if (Array.isArray(item.values?.rain_sum?.value) && item.values.rain_sum.value.length > 0) {
+              const arr = item.values.rain_sum.value;
+              rain1Day = cleanNumber(arr[arr.length - 1]) ?? rainNow;
+            }
+
+            // จัดการระดับน้ำ
+            const valList = item.values?.water_level_value_list?.value || [];
+            const wlUpRtk = cleanNumber(valList[0]) ?? cleanNumber(item.values?.water_level?.value);
+            const wlUpRsm = cleanNumber(valList[1]);
+            const wlDownRtk = cleanNumber(valList[2]);
+            const wlDownRsm = cleanNumber(valList[3]);
+
+            const hasData = (wlUpRtk !== null) || (rainNow > 0) || (item.values?.water_level?.unixtime > 0);
+            const isOnline = item.is_display !== false && hasData;
+            const onlineStatus = isOnline ? 'ออนไลน์' : 'ออฟไลน์';
+
+            const wlCrit = cleanNumber(item.water_level_critical);
+            const wlWarn = cleanNumber(item.water_level_warning);
+            let alertStatus = 'ปกติ';
+            if (wlUpRtk !== null) {
+              if (wlCrit !== null && wlUpRtk >= wlCrit) alertStatus = 'วิกฤติ';
+              else if (wlWarn !== null && wlUpRtk >= wlWarn) alertStatus = 'เตือนภัย';
+            }
+
+            return {
+              updateOne: {
+                filter: { stationCode: code },
+                update: {
+                  $set: {
+                    stationCode: code,
+                    stationName: name,
+                    basin: basinName,
+                    province: item.province || '',
+                    amphur: item.amphur || '',
+                    tambon: item.tambon || '',
+                    onlineStatus: onlineStatus,
+                    alertStatus: alertStatus,
+                    status: alertStatus, // เก็บไว้รองรับ UI เดิม
+                    rain7toNow: rainNow,
+                    rain1Day: rain1Day,
+                    waterLevelUp_RTK: wlUpRtk,
+                    waterLevelUp_RSM: wlUpRsm,
+                    waterLevelDown_RTK: wlDownRtk,
+                    waterLevelDown_RSM: wlDownRsm,
+                    warningThreshold: wlWarn,
+                    criticalThreshold: wlCrit,
+                    location: {
+                      lat: item.location?.y || null,
+                      lng: item.location?.x || null
+                    },
+                    recordedAt: new Date().toLocaleString('th-TH'),
+                    updatedAt: new Date()
+                  }
+                },
+                upsert: true
+              }
+            };
+          }).filter(op => op !== null);
+
+          // รันคำสั่งอัปเดตลง MongoDB แบบรวดเดียว (BulkWrite)
+          if (bulkOps.length > 0) {
+            const collection = db.collection(COLLECTION_NAME);
+            const result = await collection.bulkWrite(bulkOps);
+            console.log(`🎉 [สำเร็จ] BulkWrite เรียบร้อย: อัปเดต/เพิ่มใหม่รวม ${result.upsertedCount + result.modifiedCount} รายการ`);
+            resolve(bulkOps.length);
+          } else {
+            resolve(0);
+          }
+        }
+      } catch (err) {
+        console.error('❌ เกิดข้อผิดพลาดในการประมวลผลข้อมูล:', err.message);
+        if (!isResolved) {
+          clearTimeout(timeoutId);
+          ws.terminate();
+          reject(err);
+        }
+      }
+    });
+
+    ws.on('error', (err) => {
+      console.error('❌ ข้อผิดพลาด TeleRID WebSocket:', err.message);
+      if (!isResolved) {
+        clearTimeout(timeoutId);
+        reject(err);
+      }
+    });
+
+    ws.on('close', () => {
+      if (!isResolved) {
+        console.warn('⚠️ WebSocket ถูกตัดการเชื่อมต่อก่อนได้รับข้อมูล INIT');
+        clearTimeout(timeoutId);
+        reject(new Error('Connection closed prematurely'));
+      }
+    });
   });
 }
 
-// 4. ตั้งเวลาดึงข้อมูลอัตโนมัติทุก ๆ ต้นชั่วโมง (นาทีที่ 0 เช่น 07:00, 08:00, 09:00...)
-schedule.scheduleJob('0 * * * *', () => {
-  syncTelemetryData();
+// 5. ตั้งเวลาดึงข้อมูลอัตโนมัติทุก ๆ ต้นชั่วโมง (นาทีที่ 0 เช่น 07:00, 08:00, 09:00...)
+schedule.scheduleJob('0 * * * *', async () => {
+  try {
+    await syncTelemetryData();
+  } catch (error) {
+    console.error('❌ Scheduled Sync Failed:', error.message);
+  }
 });
 
 // --- REST API Endpoints สำหรับหน้า Dashboard ---
@@ -181,7 +224,9 @@ app.get('/api/stations', async (req, res) => {
     const { basin, status } = req.query;
     const filter = {};
     if (basin && basin !== 'ALL') filter.basin = basin;
-    if (status && status !== 'ALL') filter.status = status;
+    if (status && status !== 'ALL') {
+      filter.$or = [{ status: status }, { alertStatus: status }];
+    }
 
     const stations = await db.collection(COLLECTION_NAME).find(filter).sort({ stationCode: 1 }).toArray();
     res.json({ ok: true, count: stations.length, data: stations });
@@ -196,9 +241,9 @@ app.get('/api/stations/summary', async (req, res) => {
     const total = await db.collection(COLLECTION_NAME).countDocuments();
     const online = await db.collection(COLLECTION_NAME).countDocuments({ onlineStatus: 'ออนไลน์' });
     const offline = await db.collection(COLLECTION_NAME).countDocuments({ onlineStatus: 'ออฟไลน์' });
-    const critical = await db.collection(COLLECTION_NAME).countDocuments({ status: 'วิกฤติ' });
-    const warning = await db.collection(COLLECTION_NAME).countDocuments({ status: 'เตือนภัย' });
-    const normal = await db.collection(COLLECTION_NAME).countDocuments({ status: 'ปกติ' });
+    const critical = await db.collection(COLLECTION_NAME).countDocuments({ $or: [{ status: 'วิกฤติ' }, { alertStatus: 'วิกฤติ' }] });
+    const warning = await db.collection(COLLECTION_NAME).countDocuments({ $or: [{ status: 'เตือนภัย' }, { alertStatus: 'เตือนภัย' }] });
+    const normal = total - (critical + warning);
 
     res.json({
       ok: true,
@@ -209,10 +254,14 @@ app.get('/api/stations/summary', async (req, res) => {
   }
 });
 
-// 3. Endpoint สั่งซิงค์ข้อมูลผ่านการกดปุ่มหรือคำขอภายนอก
-app.get('/api/sync-now', (req, res) => {
-  syncTelemetryData();
-  res.json({ ok: true, message: 'เริ่มกระบวนการซิงค์ข้อมูลสดแล้ว' });
+// 3. Endpoint สั่งซิงค์ข้อมูลผ่านการกดปุ่มจาก Dashboard (ปรับเป็น Async/Await)
+app.get('/api/sync-now', async (req, res) => {
+  try {
+    const count = await syncTelemetryData();
+    res.json({ ok: true, message: `ซิงค์ข้อมูลสำเร็จจำนวน ${count} สถานี` });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 // 4. Endpoint สำหรับรับข้อมูลรายสถานีจากภายนอก
