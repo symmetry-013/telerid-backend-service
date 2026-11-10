@@ -7,13 +7,12 @@ const schedule = require('node-schedule');
 
 const app = express();
 
-// 1. ตั้งค่า CORS ให้เปิดกว้าง รองรับ Preflight (OPTIONS) ทุก Origin 100% ป้องกัน CORS Error
+// 1. ตั้งค่า CORS (ลบ app.options('*', cors()) ออกเพื่อป้องกัน PathError ใน Node รุ่นใหม่)
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
-app.options('*', cors());
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -27,11 +26,10 @@ const COLLECTION_NAME = process.env.COLLECTION_NAME || 'stations';
 let db;
 let client;
 
-// 2. ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข ป้องกันค่า "-" หรือค่าว่างกลายเป็น NaN พร้อมดักค่า Anomaly
+// 2. ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข
 function cleanNumber(val) {
   if (val === null || val === undefined || val === '' || val === '-' || val === '--') return null;
   const num = parseFloat(val);
-  // ดักจับค่าที่ไม่ใช่ตัวเลข หรือค่า Anomaly พื้นฐานจากเซ็นเซอร์
   if (isNaN(num) || num === -999 || num === 999) return null; 
   return num;
 }
@@ -45,8 +43,10 @@ async function initDatabase() {
     await db.collection(COLLECTION_NAME).createIndex({ stationCode: 1 }, { unique: true });
     console.log(`✅ [MongoDB] เชื่อมต่อสำเร็จ: ฐานข้อมูล "${DB_NAME}" คอลเลกชัน "${COLLECTION_NAME}"`);
 
-    // ดึงข้อมูลรอบแรกทันทีที่ Server เริ่มทำงานโดยไม่ขวาง Thread หลัก
-    syncTelemetryData().catch(err => console.error('❌ Initial Sync Error:', err.message));
+    // ลองซิงค์ข้อมูลรอบแรก (ดัก Error ไว้ไม่ให้ Server ล่มหาก Render ถูกบล็อก WebSocket)
+    syncTelemetryData().catch(err => {
+      console.warn('⚠️ คำเตือน: ไม่สามารถซิงค์อัตโนมัติได้ในสภาพแวดล้อมนี้ (อาจถูกบล็อกพอร์ต/Network Timeout):', err.message);
+    });
   } catch (error) {
     console.error('❌ [MongoDB Error]:', error.message);
   }
@@ -54,7 +54,7 @@ async function initDatabase() {
 
 initDatabase();
 
-// 4. Core Sync Function: ดึงข้อมูลตรงจาก TeleRID WebSocket และบันทึกลง MongoDB แบบ BulkWrite
+// 4. Core Sync Function
 function syncTelemetryData() {
   return new Promise((resolve, reject) => {
     console.log(`\n⏰ [${new Date().toLocaleString('th-TH')}] เริ่มกระบวนการดึงข้อมูลสดจาก TeleRID WebSocket...`);
@@ -69,10 +69,9 @@ function syncTelemetryData() {
 
     let isResolved = false;
 
-    // Fallback Timeout 30 วินาที ป้องกัน Connection ค้าง
     const timeoutId = setTimeout(() => {
       if (!isResolved) {
-        ws.terminate(); // บังคับตัดท่อทันที
+        ws.terminate();
         console.error('❌ [Timeout] ไม่ได้รับการตอบกลับจาก TeleRID ภายใน 30 วินาที');
         reject(new Error('WebSocket Connection Timeout (30s)'));
       }
@@ -93,7 +92,7 @@ function syncTelemetryData() {
         if (payload.type === 'INIT' && payload.data) {
           isResolved = true;
           clearTimeout(timeoutId);
-          ws.close(); // ปิดการเชื่อมต่อทันทีที่ได้ Snapshot 921 สถานี เพื่อคืนทรัพยากร
+          ws.close();
 
           const stationsDict = payload.data;
           const keys = Object.keys(stationsDict);
@@ -107,7 +106,6 @@ function syncTelemetryData() {
             const name = item.name ? item.name.trim() : code;
             const basinName = item.basin?.name || item.project?.name || 'ไม่ระบุ';
 
-            // จัดการค่าน้ำฝน
             const rainNow = cleanNumber(item.values?.rain_sum_now?.value) ?? 0.0;
             let rain1Day = rainNow;
             if (Array.isArray(item.values?.rain_sum?.value) && item.values.rain_sum.value.length > 0) {
@@ -115,7 +113,6 @@ function syncTelemetryData() {
               rain1Day = cleanNumber(arr[arr.length - 1]) ?? rainNow;
             }
 
-            // จัดการระดับน้ำ
             const valList = item.values?.water_level_value_list?.value || [];
             const wlUpRtk = cleanNumber(valList[0]) ?? cleanNumber(item.values?.water_level?.value);
             const wlUpRsm = cleanNumber(valList[1]);
@@ -147,7 +144,7 @@ function syncTelemetryData() {
                     tambon: item.tambon || '',
                     onlineStatus: onlineStatus,
                     alertStatus: alertStatus,
-                    status: alertStatus, // เก็บไว้รองรับ UI เดิม
+                    status: alertStatus,
                     rain7toNow: rainNow,
                     rain1Day: rain1Day,
                     waterLevelUp_RTK: wlUpRtk,
@@ -169,7 +166,6 @@ function syncTelemetryData() {
             };
           }).filter(op => op !== null);
 
-          // รันคำสั่งอัปเดตลง MongoDB แบบรวดเดียว (BulkWrite)
           if (bulkOps.length > 0) {
             const collection = db.collection(COLLECTION_NAME);
             const result = await collection.bulkWrite(bulkOps);
@@ -207,7 +203,7 @@ function syncTelemetryData() {
   });
 }
 
-// 5. ตั้งเวลาดึงข้อมูลอัตโนมัติทุก ๆ ต้นชั่วโมง (นาทีที่ 0 เช่น 07:00, 08:00, 09:00...)
+// 5. ตั้งเวลาดึงข้อมูลอัตโนมัติทุก ๆ ต้นชั่วโมง
 schedule.scheduleJob('0 * * * *', async () => {
   try {
     await syncTelemetryData();
@@ -216,9 +212,7 @@ schedule.scheduleJob('0 * * * *', async () => {
   }
 });
 
-// --- REST API Endpoints สำหรับหน้า Dashboard ---
-
-// 1. ดึงรายการสถานีทั้งหมด พร้อมรองรับการกรอง
+// --- REST API Endpoints ---
 app.get('/api/stations', async (req, res) => {
   try {
     const { basin, status } = req.query;
@@ -235,7 +229,6 @@ app.get('/api/stations', async (req, res) => {
   }
 });
 
-// 2. ดึงสรุปยอดภาพรวม
 app.get('/api/stations/summary', async (req, res) => {
   try {
     const total = await db.collection(COLLECTION_NAME).countDocuments();
@@ -254,7 +247,6 @@ app.get('/api/stations/summary', async (req, res) => {
   }
 });
 
-// 3. Endpoint สั่งซิงค์ข้อมูลผ่านการกดปุ่มจาก Dashboard (ปรับเป็น Async/Await)
 app.get('/api/sync-now', async (req, res) => {
   try {
     const count = await syncTelemetryData();
@@ -264,7 +256,6 @@ app.get('/api/sync-now', async (req, res) => {
   }
 });
 
-// 4. Endpoint สำหรับรับข้อมูลรายสถานีจากภายนอก
 app.post('/api/stations', async (req, res) => {
   try {
     const item = req.body;
@@ -281,7 +272,6 @@ app.post('/api/stations', async (req, res) => {
   }
 });
 
-// สตาร์ทเซิร์ฟเวอร์
 app.listen(PORT, () => {
   console.log(`🚀 [API Server] กำลังทำงานที่ Port ${PORT}`);
 });
