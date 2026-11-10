@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ระบบเฝ้าระวังสถานการณ์น้ำ TeleRID (ม.รทก / ม.รสม / น้ำฝน)</title>
   <script src="https://tailwindcss.com"></script>
-  <script src="https://jsdelivr.net"></script>
-  <link rel="preconnect" href="https://googleapis.com">
-  <link rel="preconnect" href="https://gstatic.com" crossorigin>
-  <link href="https://googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- ใช้ SheetJS สำหรับส่งออก Excel -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Sarabun', sans-serif; }
   </style>
@@ -21,7 +22,10 @@
       <h1 class="text-2xl md:text-3xl font-bold text-sky-400 flex items-center gap-2">
         <span>🌊</span> โทรมาตรน้ำ TeleRID: รายงานสถานการณ์น้ำ & ปริมาณฝน
       </h1>
-      <p class="text-slate-400 text-xs md:text-sm mt-1">แสดงผลระดับน้ำ ม.รทก., ม.รสม. (เหนือน้ำ-ท้ายน้ำ) และน้ำฝนสะสมสดจากฐานข้อมูล</p>
+      <p class="text-slate-400 text-xs md:text-sm mt-1">
+        แสดงผลระดับน้ำ ม.รทก., ม.รสม. (เหนือน้ำ-ท้ายน้ำ) และน้ำฝนสะสมสดจากฐานข้อมูล 
+        <span class="text-sky-300 font-medium ml-2">| อัปเดตล่าสุด: <span id="last-update-time" class="underline">กำลังโหลด...</span></span>
+      </p>
     </div>
     <div class="flex flex-wrap items-center gap-3">
       <span id="connection-badge" class="px-3 py-1.5 text-xs rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
@@ -118,8 +122,8 @@
 
   </main>
 
-    <!-- นำส่วนนี้ไปวางก่อนแท็ก </body> -->
   <script>
+    // กำหนด URL API อัตโนมัติ (รองรับทั้ง Local และ Render)
     const API_BASE_URL = window.location.origin.includes('localhost') ? 'http://localhost:5000/api' : '/api';
     let allStations = [];
     let currentRenderedStations = [];
@@ -128,7 +132,7 @@
       const badge = document.getElementById('connection-badge');
       try {
         badge.className = "px-3 py-1.5 text-xs rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center gap-1.5";
-        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-sky-400 animate-spin"></span> ซิงค์ข้อมูล...`;
+        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-sky-400 animate-spin"></span> กำลังดึงข้อมูล...`;
 
         const res = await fetch(`${API_BASE_URL}/stations`);
         if (!res.ok) throw new Error('API Error');
@@ -140,6 +144,7 @@
         let online = 0, offline = 0;
         let normal = 0, warning = 0, critical = 0;
         const basins = new Set();
+        let latestTime = null;
 
         allStations.forEach(s => {
           if (s.onlineStatus === 'ออนไลน์') online++; else offline++;
@@ -148,7 +153,31 @@
           else normal++;
 
           if (s.basin && s.basin !== 'ไม่ระบุ') basins.add(s.basin);
+
+          // หาเวลาอัปเดตล่าสุดจากฐานข้อมูล (เทียบจาก updatedAt)
+          if (s.updatedAt) {
+            const t = new Date(s.updatedAt).getTime();
+            if (!latestTime || t > latestTime) {
+              latestTime = t;
+            }
+          }
         });
+
+        // แสดงผลวันเวลาอัปเดตล่าสุดที่ Header
+        const timeEl = document.getElementById('last-update-time');
+        if (latestTime) {
+          const dateObj = new Date(latestTime);
+          timeEl.innerText = dateObj.toLocaleString('th-TH', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+          }) + ' น.';
+        } else {
+          timeEl.innerText = 'ไม่ระบุ';
+        }
 
         document.getElementById('stat-total').innerText = total;
         document.getElementById('stat-online').innerText = online;
@@ -168,7 +197,8 @@
         badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span> ข้อมูลสดสมบูรณ์`;
       } catch (e) {
         badge.className = "px-3 py-1.5 text-xs rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1.5";
-        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-400"></span> ขัดข้อง`;
+        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-400"></span> เชื่อมต่อขัดข้อง`;
+        document.getElementById('last-update-time').innerText = 'เกิดข้อผิดพลาด';
       }
     }
 
@@ -194,12 +224,10 @@
         if (isCrit) alertBadge = `<span class="text-rose-400 font-bold animate-pulse">วิกฤติ</span>`;
         else if (isWarn) alertBadge = `<span class="text-amber-400 font-semibold">เตือนภัย</span>`;
 
-        // ฟังก์ชันจัดฟอร์แมตตัวเลขใน index.html
-const formatNum = (v, unit = '') => {
-  if (v === null || v === undefined || v === '' || isNaN(v)) return '-';
-  return `${Number(v).toFixed(2)}${unit ? ' ' + unit : ''}`;
-};
-
+        const formatNum = (v, unit = '') => {
+          if (v === null || v === undefined || v === '' || isNaN(v)) return '-';
+          return `${Number(v).toFixed(2)}${unit ? ' ' + unit : ''}`;
+        };
 
         return `
           <tr class="hover:bg-slate-800/60 transition border-b border-slate-800">
@@ -270,8 +298,7 @@ const formatNum = (v, unit = '') => {
       XLSX.writeFile(wb, `โทรมาตรน้ำ_${new Date().toISOString().slice(0, 10)}.xlsx`);
     }
 
-        window.addEventListener('DOMContentLoaded', fetchDashboardData);
+    window.addEventListener('DOMContentLoaded', fetchDashboardData);
   </script>
 </body>
 </html>
-
