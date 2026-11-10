@@ -7,7 +7,7 @@ const schedule = require('node-schedule');
 
 const app = express();
 
-// 1. ตั้งค่า CORS (ลบ app.options('*', cors()) ออกเพื่อป้องกัน PathError ใน Node รุ่นใหม่)
+// 1. ตั้งค่า CORS (รองรับทุก Origin ป้องกัน CORS Error)
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -26,7 +26,7 @@ const COLLECTION_NAME = process.env.COLLECTION_NAME || 'stations';
 let db;
 let client;
 
-// 2. ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข
+// 2. ฟังก์ชันช่วยทำความสะอาดและแปลงตัวเลข ดักจับค่าผิดปกติ (Anomaly)
 function cleanNumber(val) {
   if (val === null || val === undefined || val === '' || val === '-' || val === '--') return null;
   const num = parseFloat(val);
@@ -43,10 +43,8 @@ async function initDatabase() {
     await db.collection(COLLECTION_NAME).createIndex({ stationCode: 1 }, { unique: true });
     console.log(`✅ [MongoDB] เชื่อมต่อสำเร็จ: ฐานข้อมูล "${DB_NAME}" คอลเลกชัน "${COLLECTION_NAME}"`);
 
-    // ลองซิงค์ข้อมูลรอบแรก (ดัก Error ไว้ไม่ให้ Server ล่มหาก Render ถูกบล็อก WebSocket)
-    syncTelemetryData().catch(err => {
-      console.warn('⚠️ คำเตือน: ไม่สามารถซิงค์อัตโนมัติได้ในสภาพแวดล้อมนี้ (อาจถูกบล็อกพอร์ต/Network Timeout):', err.message);
-    });
+    // บน Render เราจะข้ามการ Auto-sync ตอน Start เพื่อป้องกันปัญหา Firewall Timeout ของ Cloud
+    // ข้อมูลจะถูกอัปเดตผ่าน MongoDB Atlas จากสคริปต์ที่รันฝั่ง Local หรือกดปุ่มรีเฟรช
   } catch (error) {
     console.error('❌ [MongoDB Error]:', error.message);
   }
@@ -54,7 +52,7 @@ async function initDatabase() {
 
 initDatabase();
 
-// 4. Core Sync Function
+// 4. Core Sync Function: ดึงข้อมูลสดจาก TeleRID WebSocket และบันทึกด้วย BulkWrite
 function syncTelemetryData() {
   return new Promise((resolve, reject) => {
     console.log(`\n⏰ [${new Date().toLocaleString('th-TH')}] เริ่มกระบวนการดึงข้อมูลสดจาก TeleRID WebSocket...`);
@@ -69,6 +67,7 @@ function syncTelemetryData() {
 
     let isResolved = false;
 
+    // Fallback Timeout 30 วินาที ป้องกัน Connection ค้าง
     const timeoutId = setTimeout(() => {
       if (!isResolved) {
         ws.terminate();
@@ -92,7 +91,7 @@ function syncTelemetryData() {
         if (payload.type === 'INIT' && payload.data) {
           isResolved = true;
           clearTimeout(timeoutId);
-          ws.close();
+          ws.close(); // ปิดท่อทันทีที่ได้ข้อมูล Snapshot เพื่อคืนทรัพยากร
 
           const stationsDict = payload.data;
           const keys = Object.keys(stationsDict);
@@ -106,6 +105,7 @@ function syncTelemetryData() {
             const name = item.name ? item.name.trim() : code;
             const basinName = item.basin?.name || item.project?.name || 'ไม่ระบุ';
 
+            // น้ำฝน
             const rainNow = cleanNumber(item.values?.rain_sum_now?.value) ?? 0.0;
             let rain1Day = rainNow;
             if (Array.isArray(item.values?.rain_sum?.value) && item.values.rain_sum.value.length > 0) {
@@ -113,6 +113,7 @@ function syncTelemetryData() {
               rain1Day = cleanNumber(arr[arr.length - 1]) ?? rainNow;
             }
 
+            // ระดับน้ำ
             const valList = item.values?.water_level_value_list?.value || [];
             const wlUpRtk = cleanNumber(valList[0]) ?? cleanNumber(item.values?.water_level?.value);
             const wlUpRsm = cleanNumber(valList[1]);
@@ -203,7 +204,7 @@ function syncTelemetryData() {
   });
 }
 
-// 5. ตั้งเวลาดึงข้อมูลอัตโนมัติทุก ๆ ต้นชั่วโมง
+// 5. ตั้งเวลาดึงข้อมูลอัตโนมัติทุก ๆ ต้นชั่วโมง (นาทีที่ 0)
 schedule.scheduleJob('0 * * * *', async () => {
   try {
     await syncTelemetryData();
@@ -272,6 +273,7 @@ app.post('/api/stations', async (req, res) => {
   }
 });
 
+// สตาร์ทเซิร์ฟเวอร์
 app.listen(PORT, () => {
   console.log(`🚀 [API Server] กำลังทำงานที่ Port ${PORT}`);
 });
